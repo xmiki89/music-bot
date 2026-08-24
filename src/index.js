@@ -327,47 +327,70 @@ if (!token) {
 console.log(`DISCORD_TOKEN vorhanden (Länge ${token.length}) maskiert: ${token.slice(0, 4)}...${token.slice(-4)}`);
 console.log('Attempting Discord login...');
 
-(async () => {
-  const timeoutMs = 20000;
-  let didTimeout = false;
+// Attempt login with retries, exponential backoff, and handling for 429 Retry-After.
+async function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-  const loginPromise = client.login(token);
-  const timeoutPromise = new Promise((_, reject) => {
-    setTimeout(() => {
-      didTimeout = true;
-      reject(new Error('Login timed out'));
-    }, timeoutMs);
-  });
-
+async function validateToken() {
   try {
-    await Promise.race([loginPromise, timeoutPromise]);
-    console.log('Discord login promise resolved. Waiting for Ready event...');
-    return;
-  } catch (err) {
-    if (didTimeout) {
-      console.error(`Discord login timed out after ${timeoutMs}ms.`);
-      // Try validating the token via REST without printing it
-      try {
-        const res = await fetch('https://discord.com/api/v10/users/@me', {
-          headers: { Authorization: `Bot ${token}` },
-        });
-        console.error('Token validation request status:', res.status);
-        if (res.status === 200) {
-          console.error('Token appears valid (200) but login did not complete — possible network/gateway issue.');
-        } else if (res.status === 401) {
-          console.error('Token is invalid (401). Regenerate the token in the Developer Portal and update Render.');
-        } else {
-          console.error('Unexpected token validation status:', res.status);
+    const res = await fetch('https://discord.com/api/v10/users/@me', {
+      headers: { Authorization: `Bot ${token}` },
+    });
+    return res;
+  } catch (e) {
+    console.error('Token validation request failed:', e && e.message ? e.message : e);
+    return null;
+  }
+}
+
+async function attemptLoginWithRetries() {
+  const maxAttempts = 5;
+  let backoff = 2000; // 2s
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    console.log(`Login attempt ${attempt}/${maxAttempts}`);
+
+    const validation = await validateToken();
+    if (validation) {
+      if (validation.status === 200) {
+        console.log('Token validation OK (200). Proceeding to login.');
+        try {
+          const loginTimeoutMs = 60000; // 60s
+          await Promise.race([
+            client.login(token),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Login timed out')), loginTimeoutMs)),
+          ]);
+          console.log('Discord login promise resolved. Waiting for Ready event...');
+          return true;
+        } catch (err) {
+          console.error(`Login attempt ${attempt} failed:`, err && err.message ? err.message : err);
         }
-      } catch (e) {
-        console.error('Token validation request failed:', e && e.message ? e.message : e);
+      } else if (validation.status === 401) {
+        console.error('Token invalid (401). Regenerate the token in the Developer Portal and update Render.');
+        process.exit(1);
+      } else if (validation.status === 429) {
+        const ra = validation.headers.get('retry-after');
+        const waitMs = ra ? Math.ceil(parseFloat(ra) * 1000) : backoff;
+        console.error(`Token validation rate-limited (429). Retry-After: ${ra}. Waiting ${waitMs}ms.`);
+        await sleep(waitMs);
+        backoff *= 2;
+        continue;
+      } else {
+        console.error('Unexpected token validation status:', validation.status);
       }
     } else {
-      console.error('Bot konnte sich nicht einloggen:', err && err.message ? err.message : err);
+      console.error('Token validation failed (network). Will retry after backoff.');
     }
-    process.exit(1);
+
+    await sleep(backoff);
+    backoff *= 2;
   }
-})();
+
+  console.error('All login attempts failed. Exiting.');
+  process.exit(1);
+}
+
+attemptLoginWithRetries();
 
 // Minimaler HTTP-Server für Healthchecks und um auf einer festen Portnummer zu lauschen.
 const http = require('http');
