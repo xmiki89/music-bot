@@ -1,0 +1,17 @@
+{
+  "name": "music-bot",
+  "version": "1.0.0",
+  "description": "Music Bot",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "@discordjs/voice": "^0.16.1",
+    "discord.js": "^14.15.3",
+    "dotenv": "^16.4.5",
+    "play-dl": "^1.9.6"
+  }
+}

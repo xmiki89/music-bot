@@ -1,0 +1,307 @@
+require('dotenv').config();
+
+const {
+  Client,
+  Events,
+  GatewayIntentBits,
+  EmbedBuilder,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+} = require('discord.js');
+
+const {
+  AudioPlayerStatus,
+  createAudioPlayer,
+  createAudioResource,
+  joinVoiceChannel,
+  NoSubscriberBehavior,
+} = require('@discordjs/voice');
+
+const playdl = require('play-dl');
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildVoiceStates,
+  ],
+});
+
+const queue = new Map();
+
+const commands = [
+  new SlashCommandBuilder().setName('join').setDescription('Bot in deinen Sprachkanal holen.'),
+  new SlashCommandBuilder().setName('leave').setDescription('Bot verlässt den Sprachkanal.'),
+  new SlashCommandBuilder()
+    .setName('play')
+    .setDescription('Spielt ein Lied ab.')
+    .addStringOption((option) =>
+      option.setName('query').setDescription('YouTube-Link oder Songtitel').setRequired(true)
+    ),
+  new SlashCommandBuilder().setName('pause').setDescription('Pausiert die Wiedergabe.'),
+  new SlashCommandBuilder().setName('resume').setDescription('Setzt die Wiedergabe fort.'),
+  new SlashCommandBuilder().setName('skip').setDescription('Überspringt das aktuelle Lied.'),
+  new SlashCommandBuilder().setName('stop').setDescription('Stoppt die Wiedergabe und leert die Warteschlange.'),
+];
+
+function getGuildState(guildId, channel = null) {
+  if (!queue.has(guildId)) {
+    queue.set(guildId, {
+      connection: null,
+      player: null,
+      textChannel: channel,
+      songs: [],
+      isPlaying: false,
+    });
+  }
+
+  const state = queue.get(guildId);
+  if (channel) state.textChannel = channel;
+
+  return state;
+}
+
+async function registerCommands() {
+  const token = process.env.DISCORD_TOKEN;
+  const clientId = process.env.CLIENT_ID;
+  const guildId = process.env.GUILD_ID;
+
+  if (!token || !clientId || !guildId) {
+    console.warn('WARN: DISCORD_TOKEN, CLIENT_ID oder GUILD_ID fehlen. Slash-Commands werden nicht registriert.');
+    return;
+  }
+
+  const rest = new REST({ version: '10' }).setToken(token);
+
+  try {
+    await rest.put(Routes.applicationGuildCommands(clientId, guildId), {
+      body: commands.map((command) => command.toJSON()),
+    });
+
+    console.log('Slash-Commands erfolgreich registriert.');
+  } catch (error) {
+    console.error('Fehler beim Registrieren der Slash-Commands:', error.message);
+  }
+}
+
+async function resolveSong(query) {
+  const isUrl = /^https?:\/\//i.test(query);
+
+  if (isUrl) {
+    const info = await playdl.search(query, { limit: 1 });
+    if (!info.length) {
+      throw new Error('Kein passendes Ergebnis gefunden.');
+    }
+
+    return {
+      title: info[0].title,
+      url: info[0].url,
+    };
+  }
+
+  const results = await playdl.search(query, { limit: 1 });
+  if (!results.length) {
+    throw new Error('Kein Song mit diesem Namen gefunden.');
+  }
+
+  return {
+    title: results[0].title,
+    url: results[0].url,
+  };
+}
+
+async function playNext(guildId) {
+  const state = queue.get(guildId);
+  if (!state || state.songs.length === 0) {
+    state.isPlaying = false;
+    return;
+  }
+
+  const song = state.songs[0];
+  const stream = await playdl.stream(song.url, { quality: 2 });
+  const resource = createAudioResource(stream.stream, {
+    inputType: stream.type,
+  });
+
+  state.player.play(resource);
+  state.isPlaying = true;
+  state.songs.shift();
+
+  if (state.textChannel) {
+    const embed = new EmbedBuilder()
+      .setColor('#5865F2')
+      .setTitle('Jetzt läuft')
+      .setDescription(`[${song.title}](${song.url})`);
+
+    state.textChannel.send({ embeds: [embed] }).catch(() => {});
+  }
+}
+
+client.once(Events.ClientReady, () => {
+  console.log(`Eingeloggt als ${client.user.tag}`);
+  registerCommands();
+});
+
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+
+  const { commandName, guildId, channel } = interaction;
+
+  try {
+    if (commandName === 'join') {
+      const voiceChannel = interaction.member.voice.channel;
+      if (!voiceChannel) {
+        return interaction.reply({ content: 'Du musst in einem Sprachkanal sein.', ephemeral: true });
+      }
+
+      const state = getGuildState(guildId, channel);
+
+      if (!state.connection) {
+        state.connection = joinVoiceChannel({
+          channelId: voiceChannel.id,
+          guildId: guildId,
+          adapterCreator: interaction.guild.voiceAdapterCreator,
+        });
+      }
+
+      if (!state.player) {
+        state.player = createAudioPlayer({
+          behaviors: {
+            noSubscriber: NoSubscriberBehavior.Pause,
+          },
+        });
+
+        state.connection.subscribe(state.player);
+
+        state.player.on('stateChange', (oldState, newState) => {
+          if (oldState.status === AudioPlayerStatus.Playing && newState.status === AudioPlayerStatus.Idle) {
+            const guildState = queue.get(guildId);
+            if (guildState && guildState.songs.length > 0) {
+              playNext(guildId).catch((error) => {
+                console.error('Fehler beim Abspielen des nächsten Songs:', error.message);
+              });
+            } else {
+              guildState.isPlaying = false;
+            }
+          }
+        });
+      }
+
+      return interaction.reply({ content: `Verbunden mit <#${voiceChannel.id}>.`, ephemeral: true });
+    }
+
+    if (commandName === 'leave') {
+      const state = queue.get(guildId);
+      if (!state || !state.connection) {
+        return interaction.reply({ content: 'Der Bot ist in keinem Sprachkanal.', ephemeral: true });
+      }
+
+      state.songs = [];
+      state.connection.destroy();
+      queue.delete(guildId);
+      return interaction.reply({ content: 'Ich verlasse den Sprachkanal.', ephemeral: true });
+    }
+
+    if (commandName === 'play') {
+      const query = interaction.options.getString('query');
+      const voiceChannel = interaction.member.voice.channel;
+
+      if (!voiceChannel) {
+        return interaction.reply({ content: 'Du musst in einem Sprachkanal sein.', ephemeral: true });
+      }
+
+      const state = getGuildState(guildId, channel);
+      if (!state.connection) {
+        state.connection = joinVoiceChannel({
+          channelId: voiceChannel.id,
+          guildId: guildId,
+          adapterCreator: interaction.guild.voiceAdapterCreator,
+        });
+      }
+
+      if (!state.player) {
+        state.player = createAudioPlayer({
+          behaviors: {
+            noSubscriber: NoSubscriberBehavior.Pause,
+          },
+        });
+
+        state.connection.subscribe(state.player);
+
+        state.player.on('stateChange', (oldState, newState) => {
+          if (oldState.status === AudioPlayerStatus.Playing && newState.status === AudioPlayerStatus.Idle) {
+            const guildState = queue.get(guildId);
+            if (guildState && guildState.songs.length > 0) {
+              playNext(guildId).catch((error) => {
+                console.error('Fehler beim Abspielen des nächsten Songs:', error.message);
+              });
+            } else {
+              guildState.isPlaying = false;
+            }
+          }
+        });
+      }
+
+      const song = await resolveSong(query);
+      state.songs.push(song);
+
+      await interaction.reply({ content: `Song zur Warteschlange hinzugefügt: **${song.title}**`, ephemeral: false });
+
+      if (!state.isPlaying) {
+        await playNext(guildId);
+      }
+
+      return;
+    }
+
+    if (commandName === 'pause') {
+      const state = queue.get(guildId);
+      if (!state || !state.player) {
+        return interaction.reply({ content: 'Es läuft gerade kein Lied.', ephemeral: true });
+      }
+
+      state.player.pause();
+      return interaction.reply({ content: 'Wiedergabe pausiert.', ephemeral: true });
+    }
+
+    if (commandName === 'resume') {
+      const state = queue.get(guildId);
+      if (!state || !state.player) {
+        return interaction.reply({ content: 'Es läuft gerade kein Lied.', ephemeral: true });
+      }
+
+      state.player.unpause();
+      return interaction.reply({ content: 'Wiedergabe fortgesetzt.', ephemeral: true });
+    }
+
+    if (commandName === 'skip') {
+      const state = queue.get(guildId);
+      if (!state || !state.player) {
+        return interaction.reply({ content: 'Es läuft gerade kein Lied.', ephemeral: true });
+      }
+
+      state.player.stop();
+      return interaction.reply({ content: 'Lied übersprungen.', ephemeral: true });
+    }
+
+    if (commandName === 'stop') {
+      const state = queue.get(guildId);
+      if (!state || !state.player) {
+        return interaction.reply({ content: 'Es läuft gerade kein Lied.', ephemeral: true });
+      }
+
+      state.songs = [];
+      state.player.stop();
+      return interaction.reply({ content: 'Wiedergabe gestoppt und Warteschlange geleert.', ephemeral: true });
+    }
+  } catch (error) {
+    console.error('Interaktionsfehler:', error);
+    return interaction.reply({ content: `Fehler: ${error.message}`, ephemeral: true });
+  }
+});
+
+client.login(process.env.DISCORD_TOKEN).catch((error) => {
+  console.error('Bot konnte sich nicht einloggen:', error.message);
+  process.exit(1);
+});
