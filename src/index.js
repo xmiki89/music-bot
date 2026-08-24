@@ -301,7 +301,15 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
-client.login(process.env.DISCORD_TOKEN).catch((error) => {
+const token = process.env.DISCORD_TOKEN;
+if (!token) {
+  console.error('DISCORD_TOKEN fehlt. Setze die Umgebungsvariable DISCORD_TOKEN.');
+  process.exit(1);
+}
+
+console.log(`DISCORD_TOKEN vorhanden (Länge ${token.length}) maskiert: ${token.slice(0, 4)}...${token.slice(-4)}`);
+
+client.login(token).catch((error) => {
   console.error('Bot konnte sich nicht einloggen:', error.message);
   process.exit(1);
 });
