@@ -327,14 +327,47 @@ if (!token) {
 console.log(`DISCORD_TOKEN vorhanden (Länge ${token.length}) maskiert: ${token.slice(0, 4)}...${token.slice(-4)}`);
 console.log('Attempting Discord login...');
 
-client.login(token)
-  .then(() => {
-    console.log('Discord login promise resolved. Waiting for Ready event...');
-  })
-  .catch((error) => {
-    console.error('Bot konnte sich nicht einloggen:', error.message);
-    process.exit(1);
+(async () => {
+  const timeoutMs = 20000;
+  let didTimeout = false;
+
+  const loginPromise = client.login(token);
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => {
+      didTimeout = true;
+      reject(new Error('Login timed out'));
+    }, timeoutMs);
   });
+
+  try {
+    await Promise.race([loginPromise, timeoutPromise]);
+    console.log('Discord login promise resolved. Waiting for Ready event...');
+    return;
+  } catch (err) {
+    if (didTimeout) {
+      console.error(`Discord login timed out after ${timeoutMs}ms.`);
+      // Try validating the token via REST without printing it
+      try {
+        const res = await fetch('https://discord.com/api/v10/users/@me', {
+          headers: { Authorization: `Bot ${token}` },
+        });
+        console.error('Token validation request status:', res.status);
+        if (res.status === 200) {
+          console.error('Token appears valid (200) but login did not complete — possible network/gateway issue.');
+        } else if (res.status === 401) {
+          console.error('Token is invalid (401). Regenerate the token in the Developer Portal and update Render.');
+        } else {
+          console.error('Unexpected token validation status:', res.status);
+        }
+      } catch (e) {
+        console.error('Token validation request failed:', e && e.message ? e.message : e);
+      }
+    } else {
+      console.error('Bot konnte sich nicht einloggen:', err && err.message ? err.message : err);
+    }
+    process.exit(1);
+  }
+})();
 
 // Minimaler HTTP-Server für Healthchecks und um auf einer festen Portnummer zu lauschen.
 const http = require('http');
