@@ -313,3 +313,22 @@ client.login(token).catch((error) => {
   console.error('Bot konnte sich nicht einloggen:', error.message);
   process.exit(1);
 });
+
+// Minimaler HTTP-Server für Healthchecks und um auf einer festen Portnummer zu lauschen.
+const http = require('http');
+const listenPort = process.env.PORT || 10000;
+
+const server = http.createServer((req, res) => {
+  if (req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('OK');
+    return;
+  }
+
+  res.writeHead(404, { 'Content-Type': 'text/plain' });
+  res.end('Not Found');
+});
+
+server.listen(listenPort, '0.0.0.0', () => {
+  console.log(`Health server listening on port ${listenPort}`);
+});
