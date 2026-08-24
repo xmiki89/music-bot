@@ -325,11 +325,16 @@ if (!token) {
 }
 
 console.log(`DISCORD_TOKEN vorhanden (Länge ${token.length}) maskiert: ${token.slice(0, 4)}...${token.slice(-4)}`);
+console.log('Attempting Discord login...');
 
-client.login(token).catch((error) => {
-  console.error('Bot konnte sich nicht einloggen:', error.message);
-  process.exit(1);
-});
+client.login(token)
+  .then(() => {
+    console.log('Discord login promise resolved. Waiting for Ready event...');
+  })
+  .catch((error) => {
+    console.error('Bot konnte sich nicht einloggen:', error.message);
+    process.exit(1);
+  });
 
 // Minimaler HTTP-Server für Healthchecks und um auf einer festen Portnummer zu lauschen.
 const http = require('http');
