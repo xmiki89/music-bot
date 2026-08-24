@@ -28,6 +28,23 @@ const client = new Client({
   ],
 });
 
+// Additional diagnostics to capture runtime errors and promise rejections.
+client.on('error', (err) => {
+  console.error('Discord client error:', err);
+});
+
+client.on('shardError', (err) => {
+  console.error('Discord shard error:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception thrown:', err);
+});
+
 const queue = new Map();
 
 const commands = [
