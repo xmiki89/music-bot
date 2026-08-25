@@ -22,6 +22,7 @@ const {
 } = require('@discordjs/voice');
 
 const playdl = require('play-dl');
+const { Readable } = require('stream');
 const ytdl = require('ytdl-core');
 
 const client = new Client({
@@ -158,6 +159,34 @@ async function resolveSong(query) {
     };
   }
 
+  // Try radio-browser lookup by tag/name first (for genre like 'metal', 'pop')
+  try {
+    const rbTagUrl = `https://de1.api.radio-browser.info/json/stations/bytag/${encodeURIComponent(query)}`;
+    let resp = await fetch(rbTagUrl);
+    if (!resp.ok) {
+      // fallback to search endpoint
+      resp = await fetch(`https://de1.api.radio-browser.info/json/stations/search?name=${encodeURIComponent(query)}`);
+    }
+
+    if (resp.ok) {
+      const stations = await resp.json();
+      if (Array.isArray(stations) && stations.length > 0) {
+        // prefer stations with a working stream and common codecs
+        const station = stations.find((s) => s.url_resolved) || stations[0];
+        if (station && station.url_resolved) {
+          return {
+            title: station.name || `${query} radio`,
+            url: station.url_resolved,
+            isRadio: true,
+          };
+        }
+      }
+    }
+  } catch (e) {
+    // ignore radio lookup errors and fallback to play-dl search
+    console.error('Radio lookup failed:', e && e.message ? e.message : e);
+  }
+
   const results = await playdl.search(query, { limit: 1 });
   if (!results.length) {
     throw new Error('Kein Song mit diesem Namen gefunden.');
@@ -166,6 +195,7 @@ async function resolveSong(query) {
   return {
     title: results[0].title,
     url: results[0].url,
+    isRadio: false,
   };
 }
 
@@ -177,6 +207,43 @@ async function playNext(guildId) {
   }
 
   const song = state.songs[0];
+  // If this is a radio stream (resolved via radio-browser), fetch the stream directly
+  if (song.isRadio) {
+    try {
+      const res = await fetch(song.url);
+      if (!res.ok) throw new Error(`Radio stream HTTP ${res.status}`);
+
+      let nodeStream;
+      // In Node 18+ fetch returns a WHATWG ReadableStream; convert to Node Readable if needed
+      if (res.body && typeof res.body.getReader === 'function' && Readable.fromWeb) {
+        nodeStream = Readable.fromWeb(res.body);
+      } else {
+        nodeStream = res.body;
+      }
+
+      const resource = createAudioResource(nodeStream);
+      try {
+        state.player.play(resource);
+        state.isPlaying = true;
+        state.songs.shift();
+        console.log(`Playback started (radio) for guild ${guildId}: ${song.title}`);
+      } catch (err) {
+        console.error('Error while starting radio playback for guild', guildId, err && err.message ? err.message : err);
+        state.isPlaying = false;
+      }
+      return;
+    } catch (err) {
+      console.error('Fehler beim Abrufen des Radio-Streams für guild', guildId, err && err.message ? err.message : err);
+      state.songs.shift();
+      state.isPlaying = false;
+      if (state.textChannel && isIoEnabled(guildId)) {
+        state.textChannel.send({ content: `Fehler beim Laden des Radio-Streams **${song.title}**: ${err && err.message ? err.message : err}` }).catch(() => {});
+      }
+      if (state.songs.length > 0) setTimeout(() => playNext(guildId).catch(()=>{}), 1000);
+      return;
+    }
+  }
+
   let stream;
   try {
     stream = await playdl.stream(song.url, { quality: 2 });
@@ -227,6 +294,13 @@ async function playNext(guildId) {
     state.isPlaying = false;
     return;
   }
+
+  // Additional handling: if the song was marked as radio but we reached here without using play-dl,
+  // the above will handle most streams. If the song is a radio stream and play-dl wasn't used,
+  // we could have created a resource earlier. No-op here.
+
+  // If the resolved song is a radio stream (direct URL), ensure we handle it in case play-dl wasn't used
+  // (Note: resolveSong may set isRadio=true and provide a direct stream URL)
 
   if (state.textChannel && isIoEnabled(guildId)) {
     const embed = new EmbedBuilder()
