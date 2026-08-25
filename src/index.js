@@ -22,6 +22,7 @@ const {
 } = require('@discordjs/voice');
 
 const playdl = require('play-dl');
+const ytdl = require('ytdl-core');
 
 const client = new Client({
   intents: [
@@ -181,6 +182,23 @@ async function playNext(guildId) {
     stream = await playdl.stream(song.url, { quality: 2 });
   } catch (err) {
     console.error('Fehler beim Laden des Streams für guild', guildId, err && err.message ? err.message : err);
+    // If play-dl failed due to YouTube captcha, try ytdl-core with provided YT_COOKIE
+    const msg = err && err.message ? err.message : String(err);
+    if (process.env.YT_COOKIE && /Sign in to confirm you/i.test(msg)) {
+      try {
+        console.log('play-dl failed due to captcha; attempting ytdl-core fallback using YT_COOKIE');
+        const opts = { filter: 'audioonly', requestOptions: { headers: { cookie: process.env.YT_COOKIE } } };
+        const ytdlStream = ytdl(song.url, opts);
+        const resource = createAudioResource(ytdlStream);
+        state.player.play(resource);
+        state.isPlaying = true;
+        state.songs.shift();
+        console.log(`Playback started via ytdl-core for guild ${guildId}: ${song.title}`);
+        return;
+      } catch (yerr) {
+        console.error('ytdl-core fallback failed:', yerr && yerr.message ? yerr.message : yerr);
+      }
+    }
     // Remove problematic song from queue to avoid getting stuck
     state.songs.shift();
     state.isPlaying = false;
