@@ -208,9 +208,6 @@ client.on('interactionCreate', async (interaction) => {
     // Handle IO toggle command separately and always allow it for the guild owner
     if (commandName === 'io') {
       const enabled = interaction.options.getBoolean('enabled');
-      if (!interaction.guild || !interaction.member || interaction.member.id !== interaction.guild.ownerId) {
-        return interaction.reply({ content: 'Nur der Serverbesitzer kann diesen Befehl nutzen.', ephemeral: true });
-      }
 
       ioState[guildId] = !!enabled;
       saveIoState();
