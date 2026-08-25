@@ -176,7 +176,25 @@ async function playNext(guildId) {
   }
 
   const song = state.songs[0];
-  const stream = await playdl.stream(song.url, { quality: 2 });
+  let stream;
+  try {
+    stream = await playdl.stream(song.url, { quality: 2 });
+  } catch (err) {
+    console.error('Fehler beim Laden des Streams für guild', guildId, err && err.message ? err.message : err);
+    // Remove problematic song from queue to avoid getting stuck
+    state.songs.shift();
+    state.isPlaying = false;
+    if (state.textChannel && isIoEnabled(guildId)) {
+      const msg = err && err.message ? err.message : String(err);
+      state.textChannel.send({ content: `Fehler beim Laden des Songs **${song.title}**: ${msg}` }).catch(() => {});
+    }
+    // Try next song if any
+    if (state.songs.length > 0) {
+      setTimeout(() => playNext(guildId).catch((e) => console.error('playNext error:', e && e.message ? e.message : e)), 1000);
+    }
+    return;
+  }
+
   const resource = createAudioResource(stream.stream, {
     inputType: stream.type,
   });
@@ -188,6 +206,7 @@ async function playNext(guildId) {
     console.log(`Playback started for guild ${guildId}: ${song.title}`);
   } catch (err) {
     console.error('Error while starting playback for guild', guildId, err && err.message ? err.message : err);
+    state.isPlaying = false;
     return;
   }
 
@@ -425,7 +444,16 @@ client.on('interactionCreate', async (interaction) => {
     }
   } catch (error) {
     console.error('Interaktionsfehler:', error);
-    return interaction.reply({ content: `Fehler: ${error.message}`, ephemeral: true });
+    try {
+      if (interaction && !interaction.replied && !interaction.deferred) {
+        return interaction.reply({ content: `Fehler: ${error.message}`, ephemeral: true });
+      } else if (interaction && interaction.followUp) {
+        return interaction.followUp({ content: `Fehler: ${error.message}`, ephemeral: true });
+      }
+    } catch (replyErr) {
+      console.error('Fehler beim Senden der Fehler-Antwort:', replyErr);
+    }
+    return;
   }
 });
 
