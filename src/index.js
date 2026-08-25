@@ -9,6 +9,8 @@ const {
   Routes,
   SlashCommandBuilder,
 } = require('discord.js');
+const fs = require('fs');
+const path = require('path');
 
 const {
   AudioPlayerStatus,
@@ -60,7 +62,42 @@ const commands = [
   new SlashCommandBuilder().setName('resume').setDescription('Setzt die Wiedergabe fort.'),
   new SlashCommandBuilder().setName('skip').setDescription('Überspringt das aktuelle Lied.'),
   new SlashCommandBuilder().setName('stop').setDescription('Stoppt die Wiedergabe und leert die Warteschlange.'),
+  new SlashCommandBuilder()
+    .setName('io')
+    .setDescription('Bot Ein-/Ausgabe aktivieren/deaktivieren')
+    .addBooleanOption((option) =>
+      option.setName('enabled').setDescription('true=aktivieren, false=deaktivieren').setRequired(true)
+    ),
 ];
+
+// Persistent IO state per guild (default: enabled)
+const ioStatePath = path.join(__dirname, '..', 'data', 'io_state.json');
+let ioState = {};
+
+function loadIoState() {
+  try {
+    const raw = fs.readFileSync(ioStatePath, 'utf8');
+    ioState = JSON.parse(raw);
+  } catch (e) {
+    ioState = {};
+  }
+}
+
+function saveIoState() {
+  try {
+    fs.mkdirSync(path.dirname(ioStatePath), { recursive: true });
+    fs.writeFileSync(ioStatePath, JSON.stringify(ioState, null, 2), 'utf8');
+  } catch (e) {
+    console.error('Fehler beim Speichern des IO-Status:', e && e.message ? e.message : e);
+  }
+}
+
+function isIoEnabled(guildId) {
+  // default true
+  if (!guildId) return true;
+  if (typeof ioState[guildId] === 'boolean') return ioState[guildId];
+  return true;
+}
 
 function getGuildState(guildId, channel = null) {
   if (!queue.has(guildId)) {
@@ -145,7 +182,7 @@ async function playNext(guildId) {
   state.isPlaying = true;
   state.songs.shift();
 
-  if (state.textChannel) {
+  if (state.textChannel && isIoEnabled(guildId)) {
     const embed = new EmbedBuilder()
       .setColor('#5865F2')
       .setTitle('Jetzt läuft')
@@ -157,6 +194,8 @@ async function playNext(guildId) {
 
 client.once(Events.ClientReady, () => {
   console.log(`Eingeloggt als ${client.user.tag}`);
+  loadIoState();
+  console.log('IO-Status geladen.');
   registerCommands();
 });
 
@@ -166,6 +205,22 @@ client.on('interactionCreate', async (interaction) => {
   const { commandName, guildId, channel } = interaction;
 
   try {
+    // Handle IO toggle command separately and always allow it for the guild owner
+    if (commandName === 'io') {
+      const enabled = interaction.options.getBoolean('enabled');
+      if (!interaction.guild || !interaction.member || interaction.member.id !== interaction.guild.ownerId) {
+        return interaction.reply({ content: 'Nur der Serverbesitzer kann diesen Befehl nutzen.', ephemeral: true });
+      }
+
+      ioState[guildId] = !!enabled;
+      saveIoState();
+      return interaction.reply({ content: `Bot Ein-/Ausgabe ist jetzt ${ioState[guildId] ? 'aktiviert' : 'deaktiviert'}.`, ephemeral: true });
+    }
+
+    // If IO is disabled for this guild, block other commands with an ephemeral note
+    if (!isIoEnabled(guildId)) {
+      return interaction.reply({ content: 'Der Bot ist für diesen Server deaktiviert.', ephemeral: true });
+    }
     if (commandName === 'join') {
       const voiceChannel = interaction.member.voice.channel;
       if (!voiceChannel) {
