@@ -4,6 +4,7 @@ const {
   Client,
   Events,
   GatewayIntentBits,
+  PermissionsBitField,
   EmbedBuilder,
   REST,
   Routes,
@@ -68,6 +69,7 @@ const commands = [
     .addBooleanOption((option) =>
       option.setName('enabled').setDescription('true=aktivieren, false=deaktivieren').setRequired(true)
     ),
+  new SlashCommandBuilder().setName('restart').setDescription('Startet den Bot neu (Admins oder OWNER_ID).'),
 ];
 
 // Persistent IO state per guild (default: enabled)
@@ -212,6 +214,31 @@ client.on('interactionCreate', async (interaction) => {
       ioState[guildId] = !!enabled;
       saveIoState();
       return interaction.reply({ content: `Bot Ein-/Ausgabe ist jetzt ${ioState[guildId] ? 'aktiviert' : 'deaktiviert'}.`, ephemeral: true });
+    }
+
+    if (commandName === 'restart') {
+      const ownerId = process.env.OWNER_ID;
+      const isOwner = ownerId && interaction.user.id === ownerId;
+      const isAdmin =
+        interaction.member &&
+        interaction.member.permissions &&
+        interaction.member.permissions.has(PermissionsBitField.Flags.Administrator);
+
+      if (!isOwner && !isAdmin) {
+        return interaction.reply({ content: 'Nur Admins oder der OWNER können den Bot neu starten.', ephemeral: true });
+      }
+
+      await interaction.reply({ content: 'Starte Bot neu...', ephemeral: true });
+      try {
+        saveIoState();
+      } catch (e) {}
+      setTimeout(() => {
+        try {
+          client.destroy();
+        } catch (e) {}
+        process.exit(0);
+      }, 1000);
+      return;
     }
 
     // If IO is disabled for this guild, block other commands with an ephemeral note

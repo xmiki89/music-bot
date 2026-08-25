@@ -30,6 +30,7 @@ const commands = [
     .addBooleanOption((option) =>
       option.setName('enabled').setDescription('true=aktivieren, false=deaktivieren').setRequired(true)
     ),
+  new SlashCommandBuilder().setName('restart').setDescription('Startet den Bot neu (Admins oder OWNER_ID).'),
 ].map((c) => c.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(token);
