@@ -69,6 +69,7 @@ const commands = [
     .addBooleanOption((option) =>
       option.setName('enabled').setDescription('true=aktivieren, false=deaktivieren').setRequired(true)
     ),
+  new SlashCommandBuilder().setName('status').setDescription('Zeigt Verbindungs- und Player-Status.'),
   new SlashCommandBuilder().setName('restart').setDescription('Startet den Bot neu (Admins oder OWNER_ID).'),
 ];
 
@@ -180,9 +181,15 @@ async function playNext(guildId) {
     inputType: stream.type,
   });
 
-  state.player.play(resource);
-  state.isPlaying = true;
-  state.songs.shift();
+  try {
+    state.player.play(resource);
+    state.isPlaying = true;
+    state.songs.shift();
+    console.log(`Playback started for guild ${guildId}: ${song.title}`);
+  } catch (err) {
+    console.error('Error while starting playback for guild', guildId, err && err.message ? err.message : err);
+    return;
+  }
 
   if (state.textChannel && isIoEnabled(guildId)) {
     const embed = new EmbedBuilder()
@@ -241,6 +248,19 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
+    if (commandName === 'status') {
+      const state = queue.get(guildId);
+      if (!state) {
+        return interaction.reply({ content: 'Keine Verbindung oder kein Player-Status für diesen Server.', ephemeral: true });
+      }
+
+      const connState = state.connection ? (state.connection.state ? state.connection.state.status : 'connected') : 'none';
+      const playerState = state.player ? state.player.state.status : 'none';
+      const songs = state.songs ? state.songs.length : 0;
+
+      return interaction.reply({ content: `Connection: ${connState}\nPlayer: ${playerState}\nisPlaying: ${state.isPlaying}\nQueue length: ${songs}`, ephemeral: true });
+    }
+
     // If IO is disabled for this guild, block other commands with an ephemeral note
     if (!isIoEnabled(guildId)) {
       return interaction.reply({ content: 'Der Bot ist für diesen Server deaktiviert.', ephemeral: true });
@@ -258,6 +278,9 @@ client.on('interactionCreate', async (interaction) => {
           channelId: voiceChannel.id,
           guildId: guildId,
           adapterCreator: interaction.guild.voiceAdapterCreator,
+        });
+        state.connection.on('stateChange', (oldState, newState) => {
+          console.log(`VoiceConnection state for guild ${guildId}: ${oldState.status} -> ${newState.status}`);
         });
       }
 
@@ -281,6 +304,9 @@ client.on('interactionCreate', async (interaction) => {
               guildState.isPlaying = false;
             }
           }
+        });
+        state.player.on('error', (err) => {
+          console.error('Audio player error for guild', guildId, err && err.message ? err.message : err);
         });
       }
 
@@ -314,6 +340,9 @@ client.on('interactionCreate', async (interaction) => {
           guildId: guildId,
           adapterCreator: interaction.guild.voiceAdapterCreator,
         });
+        state.connection.on('stateChange', (oldState, newState) => {
+          console.log(`VoiceConnection state for guild ${guildId}: ${oldState.status} -> ${newState.status}`);
+        });
       }
 
       if (!state.player) {
@@ -336,6 +365,9 @@ client.on('interactionCreate', async (interaction) => {
               guildState.isPlaying = false;
             }
           }
+        });
+        state.player.on('error', (err) => {
+          console.error('Audio player error for guild', guildId, err && err.message ? err.message : err);
         });
       }
 

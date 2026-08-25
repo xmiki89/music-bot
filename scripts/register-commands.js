@@ -31,6 +31,7 @@ const commands = [
       option.setName('enabled').setDescription('true=aktivieren, false=deaktivieren').setRequired(true)
     ),
   new SlashCommandBuilder().setName('restart').setDescription('Startet den Bot neu (Admins oder OWNER_ID).'),
+  new SlashCommandBuilder().setName('status').setDescription('Zeigt Verbindungs- und Player-Status.'),
 ].map((c) => c.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(token);
